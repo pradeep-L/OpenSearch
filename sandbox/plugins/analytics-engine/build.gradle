@@ -57,6 +57,12 @@ dependencies {
   implementation "org.apache.arrow:arrow-vector:${versions.arrow}"
   implementation "org.apache.arrow:arrow-memory-core:${versions.arrow}"
 
+  // httpcore5 — required at runtime by Calcite's avatica-core (BuiltInConnectionProperty
+  // loads org.apache.hc.core5.util.Timeout). Avatica lives in this plugin's classloader,
+  // so httpcore5 must be bundled here for child plugins (test-ppl-frontend) that trigger
+  // avatica initialization.
+  implementation "org.apache.httpcomponents.core5:httpcore5:${versions.httpcore5}"
+
   // Arrow Flight RPC — compile-only; the arrow-flight-rpc plugin provides it at runtime.
   // transitive = false prevents arrow-flight-rpc's transitives (slf4j, jackson, arrow-*,
   // guava, netty, grpc, etc.) from landing on resolveableCompileOnly, which bundlePlugin

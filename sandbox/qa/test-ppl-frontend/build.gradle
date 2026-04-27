@@ -101,6 +101,8 @@ bundlePlugin {
   exclude 'uzaygezen-core-*.jar'
   exclude 'sketches-core-*.jar'
   exclude 'memory-*.jar'
+  exclude 'httpcore5-*.jar'
+  exclude 'httpcore5-h2-*.jar'
   exclude 'httpclient5-*.jar'
   exclude 'jts-core-*.jar'
   exclude 'jackson-core-*.jar'
