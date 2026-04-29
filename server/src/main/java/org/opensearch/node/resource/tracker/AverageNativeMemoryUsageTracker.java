@@ -12,6 +12,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.common.unit.TimeValue;
 import org.opensearch.monitor.os.OsProbe;
+import org.opensearch.monitor.process.NativePluginMemoryProbe;
 import org.opensearch.threadpool.ThreadPool;
 
 /**
@@ -22,6 +23,12 @@ import org.opensearch.threadpool.ThreadPool;
  * On Linux, it uses available memory from /proc/meminfo (MemAvailable) which accounts for
  * reclaimable page cache and slab memory, giving a more accurate picture of actual memory
  * pressure. On other platforms, it falls back to free physical memory.
+ *
+ * <p>For observability, on each {@link #getUsage()} call this tracker additionally reads and
+ * logs (at DEBUG) three diagnostic metrics: the process-level {@code RssAnon} from
+ * {@code /proc/self/smaps_rollup}, the JVM heap used (from the {@code MemoryMXBean}), and the
+ * total bytes used by native (Rust) plugin heaps exposed by {@code NativeLibraryLoader}. These
+ * values do not affect the returned usage and are intended purely for operator visibility.
  */
 public class AverageNativeMemoryUsageTracker extends AbstractAverageUsageTracker {
 
@@ -55,7 +62,22 @@ public class AverageNativeMemoryUsageTracker extends AbstractAverageUsageTracker
         }
         long usedMemory = totalMemory - unusedMemory;
         long usage = usedMemory * 100 / totalMemory;
-        LOGGER.debug("Recording native memory usage: {}%", usage);
+
+        // Observability-only: log process-level and native plugin memory alongside the node-level usage.
+        // These values do NOT influence the returned admission-control usage value.
+        final long processRssAnon = osProbe.getProcessRssAnon();
+        final long rustPluginHeapUsed = NativePluginMemoryProbe.getRustPluginHeapUsedBytes();
+        final long jvmHeapUsed = osProbe.getJvmHeapUsed();
+        LOGGER.debug(
+            "Recording native memory usage: {}% (totalMemory={}B, availableMemory={}B, processRssAnon={}B, "
+                + "jvmHeapUsed={}B, rustPluginHeapUsed={}B)",
+            usage,
+            totalMemory,
+            availableMemory,
+            processRssAnon,
+            jvmHeapUsed,
+            rustPluginHeapUsed
+        );
         return usage;
     }
 }

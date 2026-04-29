@@ -42,6 +42,7 @@ import org.opensearch.monitor.Probes;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.lang.management.ManagementFactory;
+import java.lang.management.MemoryMXBean;
 import java.lang.management.OperatingSystemMXBean;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -81,6 +82,8 @@ import java.util.stream.Collectors;
 public class OsProbe {
 
     private static final OperatingSystemMXBean osMxBean = ManagementFactory.getOperatingSystemMXBean();
+
+    private static final MemoryMXBean memoryMxBean = ManagementFactory.getMemoryMXBean();
 
     private static final Method getFreePhysicalMemorySize;
     private static final Method getTotalPhysicalMemorySize;
@@ -294,6 +297,78 @@ public class OsProbe {
             }
         }
         return -1;
+    }
+
+    /**
+     * Returns anonymous resident memory (in bytes) consumed by the OpenSearch process on Linux by reading
+     * {@code RssAnon} from {@code /proc/self/smaps_rollup}. {@code RssAnon} excludes file-backed pages and
+     * shared library mappings, so it is a good proxy for memory actually allocated by the process (JVM heap,
+     * native allocations, mmap'ed anonymous regions).
+     *
+     * <p>Returns -1 if not on Linux or if the value cannot be read. Logs the value at DEBUG on success.
+     */
+    public long getProcessRssAnon() {
+        if (!Constants.LINUX) {
+            return -1;
+        }
+        try {
+            final long rssAnon = readRssAnonFromSmapsRollup();
+            if (rssAnon >= 0 && logger.isDebugEnabled()) {
+                logger.debug("process RssAnon from /proc/self/smaps_rollup: {} bytes", rssAnon);
+            }
+            return rssAnon;
+        } catch (Exception e) {
+            logger.warn("error reading RssAnon from /proc/self/smaps_rollup", e);
+            return -1;
+        }
+    }
+
+    /**
+     * Reads {@code RssAnon} from {@code /proc/self/smaps_rollup}.
+     *
+     * @return the anonymous RSS in bytes, or -1 if not found
+     * @throws IOException if an I/O exception occurs reading {@code /proc/self/smaps_rollup}
+     */
+    @SuppressForbidden(reason = "access /proc/self/smaps_rollup")
+    long readRssAnonFromSmapsRollup() throws IOException {
+        try (BufferedReader reader = Files.newBufferedReader(PathUtils.get("/proc/self/smaps_rollup"))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (line.startsWith("RssAnon:")) {
+                    final String[] parts = line.split("\\s+");
+                    if (parts.length >= 2) {
+                        // Value in /proc/self/smaps_rollup is in kB
+                        return Long.parseLong(parts[1]) * 1024;
+                    } else {
+                        return -1;
+                    }
+                }
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * Returns the JVM heap memory used in bytes, as reported by {@link MemoryMXBean#getHeapMemoryUsage()}.
+     * Cross-platform (does not depend on Linux {@code /proc}). Returns -1 if the value cannot be read.
+     *
+     * <p>Logs the value at DEBUG on success.
+     */
+    public long getJvmHeapUsed() {
+        try {
+            final long heapUsed = memoryMxBean.getHeapMemoryUsage().getUsed();
+            if (heapUsed < 0) {
+                logger.debug("JVM reported a negative heap used value [{}]", heapUsed);
+                return -1;
+            }
+            if (logger.isDebugEnabled()) {
+                logger.debug("JVM heap used: {} bytes", heapUsed);
+            }
+            return heapUsed;
+        } catch (Exception e) {
+            logger.warn("error retrieving JVM heap used", e);
+            return -1;
+        }
     }
 
     // this property is to support a hack to workaround an issue with Docker containers mounting the cgroups hierarchy inconsistently with
