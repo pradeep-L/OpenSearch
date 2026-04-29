@@ -25,10 +25,11 @@ import org.opensearch.threadpool.ThreadPool;
  * pressure. On other platforms, it falls back to free physical memory.
  *
  * <p>For observability, on each {@link #getUsage()} call this tracker additionally reads and
- * logs (at DEBUG) three diagnostic metrics: the process-level {@code RssAnon} from
- * {@code /proc/self/smaps_rollup}, the JVM heap used (from the {@code MemoryMXBean}), and the
- * total bytes used by native (Rust) plugin heaps exposed by {@code NativeLibraryLoader}. These
- * values do not affect the returned usage and are intended purely for operator visibility.
+ * logs (at INFO) four diagnostic metrics: the process-level {@code RssAnon} from
+ * {@code /proc/self/smaps_rollup} (the {@code Anonymous} line) and from {@code /proc/self/status}
+ * (the {@code RssAnon} line), the JVM heap used (from the {@code MemoryMXBean}), and the total
+ * bytes used by native (Rust) plugin heaps exposed by {@code NativeLibraryLoader}. These values
+ * do not affect the returned usage and are intended purely for operator visibility.
  */
 public class AverageNativeMemoryUsageTracker extends AbstractAverageUsageTracker {
 
@@ -66,15 +67,17 @@ public class AverageNativeMemoryUsageTracker extends AbstractAverageUsageTracker
         // Observability-only: log process-level and native plugin memory alongside the node-level usage.
         // These values do NOT influence the returned admission-control usage value.
         final long processRssAnon = osProbe.getProcessRssAnon();
+        final long processRssAnonFromStatus = osProbe.getProcessRssAnonFromStatus();
         final long rustPluginHeapUsed = NativePluginMemoryProbe.getRustPluginHeapUsedBytes();
         final long jvmHeapUsed = osProbe.getJvmHeapUsed();
-        LOGGER.debug(
-            "Recording native memory usage: {}% (totalMemory={}B, availableMemory={}B, processRssAnon={}B, "
-                + "jvmHeapUsed={}B, rustPluginHeapUsed={}B)",
+        LOGGER.info(
+            "Recording native memory usage: {}% (totalMemory={}B, availableMemory={}B, "
+                + "processRssAnonSmapsRollup={}B, processRssAnonymous={}B, jvmHeapUsed={}B, rustPluginHeapUsed={}B)",
             usage,
             totalMemory,
             availableMemory,
             processRssAnon,
+            processRssAnonFromStatus,
             jvmHeapUsed,
             rustPluginHeapUsed
         );

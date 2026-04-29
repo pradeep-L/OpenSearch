@@ -301,9 +301,10 @@ public class OsProbe {
 
     /**
      * Returns anonymous resident memory (in bytes) consumed by the OpenSearch process on Linux by reading
-     * {@code RssAnon} from {@code /proc/self/smaps_rollup}. {@code RssAnon} excludes file-backed pages and
-     * shared library mappings, so it is a good proxy for memory actually allocated by the process (JVM heap,
-     * native allocations, mmap'ed anonymous regions).
+     * the {@code Anonymous} field from {@code /proc/self/smaps_rollup}. This corresponds to the {@code RssAnon}
+     * metric (anonymous pages resident in RAM) and excludes file-backed pages and shared library mappings,
+     * so it is a good proxy for memory actually allocated by the process (JVM heap, native allocations,
+     * mmap'ed anonymous regions).
      *
      * <p>Returns -1 if not on Linux or if the value cannot be read. Logs the value at DEBUG on success.
      */
@@ -314,17 +315,19 @@ public class OsProbe {
         try {
             final long rssAnon = readRssAnonFromSmapsRollup();
             if (rssAnon >= 0 && logger.isDebugEnabled()) {
-                logger.debug("process RssAnon from /proc/self/smaps_rollup: {} bytes", rssAnon);
+                logger.debug("process RssAnon (Anonymous) from /proc/self/smaps_rollup: {} bytes", rssAnon);
             }
             return rssAnon;
         } catch (Exception e) {
-            logger.warn("error reading RssAnon from /proc/self/smaps_rollup", e);
+            logger.warn("error reading Anonymous from /proc/self/smaps_rollup", e);
             return -1;
         }
     }
 
     /**
-     * Reads {@code RssAnon} from {@code /proc/self/smaps_rollup}.
+     * Reads the {@code Anonymous} field from {@code /proc/self/smaps_rollup}. In {@code smaps_rollup}
+     * the anonymous RSS total is reported on the {@code Anonymous:} line (not {@code RssAnon:} as
+     * it is in {@code /proc/self/status}).
      *
      * @return the anonymous RSS in bytes, or -1 if not found
      * @throws IOException if an I/O exception occurs reading {@code /proc/self/smaps_rollup}
@@ -334,10 +337,59 @@ public class OsProbe {
         try (BufferedReader reader = Files.newBufferedReader(PathUtils.get("/proc/self/smaps_rollup"))) {
             String line;
             while ((line = reader.readLine()) != null) {
-                if (line.startsWith("RssAnon:")) {
+                if (line.startsWith("Anonymous:")) {
                     final String[] parts = line.split("\\s+");
                     if (parts.length >= 2) {
                         // Value in /proc/self/smaps_rollup is in kB
+                        return Long.parseLong(parts[1]) * 1024;
+                    } else {
+                        return -1;
+                    }
+                }
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * Returns anonymous resident memory (in bytes) consumed by the OpenSearch process on Linux by reading
+     * {@code RssAnon} from {@code /proc/self/status}. This is the same semantic metric as the
+     * {@code Anonymous} line in {@code /proc/self/smaps_rollup} and is exposed as a second source for
+     * cross-checking.
+     *
+     * <p>Returns -1 if not on Linux or if the value cannot be read. Logs the value at DEBUG on success.
+     */
+    public long getProcessRssAnonFromStatus() {
+        if (!Constants.LINUX) {
+            return -1;
+        }
+        try {
+            final long rssAnon = readRssAnonFromProcStatus();
+            if (rssAnon >= 0 && logger.isDebugEnabled()) {
+                logger.debug("process RssAnon from /proc/self/status: {} bytes", rssAnon);
+            }
+            return rssAnon;
+        } catch (Exception e) {
+            logger.warn("error reading RssAnon from /proc/self/status", e);
+            return -1;
+        }
+    }
+
+    /**
+     * Reads {@code RssAnon} from {@code /proc/self/status}.
+     *
+     * @return the anonymous RSS in bytes, or -1 if not found
+     * @throws IOException if an I/O exception occurs reading {@code /proc/self/status}
+     */
+    @SuppressForbidden(reason = "access /proc/self/status")
+    long readRssAnonFromProcStatus() throws IOException {
+        try (BufferedReader reader = Files.newBufferedReader(PathUtils.get("/proc/self/status"))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (line.startsWith("RssAnon:")) {
+                    final String[] parts = line.split("\\s+");
+                    if (parts.length >= 2) {
+                        // Value in /proc/self/status is in kB
                         return Long.parseLong(parts[1]) * 1024;
                     } else {
                         return -1;

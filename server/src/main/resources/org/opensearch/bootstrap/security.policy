@@ -239,6 +239,7 @@ grant {
   permission java.io.FilePermission "/proc/meminfo", "read";
   // process-level memory stats on Linux
   permission java.io.FilePermission "/proc/self/smaps_rollup", "read";
+  permission java.io.FilePermission "/proc/self/status", "read";
 
   // control group stats on Linux
   // TODO: update later when wildcard is supported in policy
