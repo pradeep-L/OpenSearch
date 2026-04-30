@@ -12,7 +12,6 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.common.unit.TimeValue;
 import org.opensearch.monitor.os.OsProbe;
-import org.opensearch.monitor.process.NativePluginMemoryProbe;
 import org.opensearch.threadpool.ThreadPool;
 
 /**
@@ -47,12 +46,20 @@ public class AverageNativeMemoryUsageTracker extends AbstractAverageUsageTracker
     @Override
     public long getUsage() {
         OsProbe osProbe = OsProbe.getInstance();
+
+        // /proc/meminfo: MemTotal
+        final long totalMemoryStart = System.nanoTime();
         long totalMemory = osProbe.getTotalPhysicalMemorySize();
+        final long totalMemoryReadNanos = System.nanoTime() - totalMemoryStart;
         if (totalMemory <= 0) {
             LOGGER.warn("Unable to retrieve total physical memory size");
             return 0;
         }
+
+        // /proc/meminfo: MemAvailable
+        final long availableMemoryStart = System.nanoTime();
         long availableMemory = osProbe.getAvailableMemorySize();
+        final long availableMemoryReadNanos = System.nanoTime() - availableMemoryStart;
         long unusedMemory;
         if (availableMemory >= 0) {
             // Use available memory (includes reclaimable cache) for a more accurate picture
@@ -66,19 +73,38 @@ public class AverageNativeMemoryUsageTracker extends AbstractAverageUsageTracker
 
         // Observability-only: log process-level and native plugin memory alongside the node-level usage.
         // These values do NOT influence the returned admission-control usage value.
+        // /proc/self/smaps_rollup: Anonymous
+        final long smapsRollupStart = System.nanoTime();
         final long processRssAnon = osProbe.getProcessRssAnon();
+        final long smapsRollupReadNanos = System.nanoTime() - smapsRollupStart;
+
+        // /proc/self/status: RssAnon
+        final long statusStart = System.nanoTime();
         final long processRssAnonFromStatus = osProbe.getProcessRssAnonFromStatus();
+        final long statusReadNanos = System.nanoTime() - statusStart;
+
       //  final long rustPluginHeapUsed = NativePluginMemoryProbe.getRustPluginHeapUsedBytes();
+
+        // JVM MemoryMXBean (not a /proc read, included for comparison)
+        final long jvmHeapStart = System.nanoTime();
         final long jvmHeapUsed = osProbe.getJvmHeapUsed();
+        final long jvmHeapReadNanos = System.nanoTime() - jvmHeapStart;
+
         LOGGER.info(
             "Recording native memory usage: {}% (totalMemory={}MB, usedMemory={}MB, "
-                + "processRssAnonSmapsRollup={}MB, processRssAnonymous={}MB, jvmHeapUsed={}MB)",
+                + "processRssAnonSmapsRollup={}MB, processRssAnonymous={}MB, jvmHeapUsed={}MB) "
+                + "readLatencyMicros[meminfoTotal={}, meminfoAvailable={}, smapsRollup={}, status={}, jvmHeap={}]",
             usage,
             totalMemory / (1024L * 1024L),
             usedMemory / (1024L * 1024L),
             processRssAnon / (1024L * 1024L),
             processRssAnonFromStatus / (1024L * 1024L),
-            jvmHeapUsed / (1024L * 1024L)
+            jvmHeapUsed / (1024L * 1024L),
+            totalMemoryReadNanos / 1_000L,
+            availableMemoryReadNanos / 1_000L,
+            smapsRollupReadNanos / 1_000L,
+            statusReadNanos / 1_000L,
+            jvmHeapReadNanos / 1_000L
         );
         return usage;
     }
