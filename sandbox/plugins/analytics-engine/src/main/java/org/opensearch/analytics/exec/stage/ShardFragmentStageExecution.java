@@ -9,6 +9,7 @@
 package org.opensearch.analytics.exec.stage;
 
 import org.apache.arrow.vector.VectorSchemaRoot;
+import org.opensearch.ExceptionsHelper;
 import org.opensearch.analytics.backend.ExchangeSource;
 import org.opensearch.analytics.exec.AnalyticsSearchTransportService;
 import org.opensearch.analytics.exec.PendingExecutions;
@@ -22,6 +23,7 @@ import org.opensearch.analytics.planner.dag.Stage;
 import org.opensearch.analytics.spi.DataConsumer;
 import org.opensearch.analytics.spi.ExchangeSink;
 import org.opensearch.cluster.service.ClusterService;
+import org.opensearch.core.concurrency.OpenSearchRejectedExecutionException;
 
 import java.util.List;
 import java.util.Map;
@@ -121,7 +123,15 @@ final class ShardFragmentStageExecution extends AbstractStageExecution implement
 
             @Override
             public void onFailure(Exception e) {
-                captureFailure(new RuntimeException("Stage " + stage.getStageId() + " failed", e));
+                // Preserve OpenSearchRejectedExecutionException end-to-end so the REST layer
+                // can map it to HTTP 429 instead of 500. Wrapping it in a plain RuntimeException
+                // here hides the rejection from ExceptionsHelper#status.
+                Throwable rejected = ExceptionsHelper.unwrap(e, OpenSearchRejectedExecutionException.class);
+                if (rejected != null) {
+                    captureFailure((OpenSearchRejectedExecutionException) rejected);
+                } else {
+                    captureFailure(new RuntimeException("Stage " + stage.getStageId() + " failed", e));
+                }
                 metrics.incrementTasksFailed();
                 onShardTerminated();
             }

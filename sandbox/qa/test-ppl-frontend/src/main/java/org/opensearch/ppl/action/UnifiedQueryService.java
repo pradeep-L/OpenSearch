@@ -15,8 +15,10 @@ import org.apache.calcite.schema.Table;
 import org.apache.calcite.schema.impl.AbstractSchema;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.opensearch.ExceptionsHelper;
 import org.opensearch.analytics.EngineContext;
 import org.opensearch.analytics.exec.QueryPlanExecutor;
+import org.opensearch.core.concurrency.OpenSearchRejectedExecutionException;
 import org.opensearch.sql.api.UnifiedQueryContext;
 import org.opensearch.sql.api.UnifiedQueryPlanner;
 import org.opensearch.sql.executor.QueryType;
@@ -105,6 +107,12 @@ public class UnifiedQueryService {
 
             return new PPLResponse(columns, rows);
         } catch (Exception e) {
+            // Preserve OpenSearchRejectedExecutionException end-to-end so REST returns 429,
+            // not 500. If the cause chain contains a rejection, re-throw it unwrapped.
+            Throwable rejected = ExceptionsHelper.unwrap(e, OpenSearchRejectedExecutionException.class);
+            if (rejected != null) {
+                throw (OpenSearchRejectedExecutionException) rejected;
+            }
             if (e instanceof RuntimeException) {
                 throw (RuntimeException) e;
             }
