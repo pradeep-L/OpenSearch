@@ -68,18 +68,17 @@ public class AverageNativeMemoryUsageTracker extends AbstractAverageUsageTracker
         // These values do NOT influence the returned admission-control usage value.
         final long processRssAnon = osProbe.getProcessRssAnon();
         final long processRssAnonFromStatus = osProbe.getProcessRssAnonFromStatus();
-        final long rustPluginHeapUsed = NativePluginMemoryProbe.getRustPluginHeapUsedBytes();
+      //  final long rustPluginHeapUsed = NativePluginMemoryProbe.getRustPluginHeapUsedBytes();
         final long jvmHeapUsed = osProbe.getJvmHeapUsed();
         LOGGER.info(
-            "Recording native memory usage: {}% (totalMemory={}B, availableMemory={}B, "
-                + "processRssAnonSmapsRollup={}B, processRssAnonymous={}B, jvmHeapUsed={}B, rustPluginHeapUsed={}B)",
+            "Recording native memory usage: {}% (totalMemory={}B, usedMemory={}B, "
+                + "processRssAnonSmapsRollup={}B, processRssAnonymous={}B, jvmHeapUsed={}B)",
             usage,
             totalMemory,
-            availableMemory,
+            usedMemory,
             processRssAnon,
             processRssAnonFromStatus,
-            jvmHeapUsed,
-            rustPluginHeapUsed
+            jvmHeapUsed
         );
         return usage;
     }
