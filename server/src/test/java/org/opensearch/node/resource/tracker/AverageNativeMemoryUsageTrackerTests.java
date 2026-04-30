@@ -8,6 +8,7 @@
 
 package org.opensearch.node.resource.tracker;
 
+import org.opensearch.common.settings.Settings;
 import org.opensearch.common.unit.TimeValue;
 import org.opensearch.test.OpenSearchTestCase;
 import org.opensearch.threadpool.TestThreadPool;
@@ -40,7 +41,8 @@ public class AverageNativeMemoryUsageTrackerTests extends OpenSearchTestCase {
         AverageNativeMemoryUsageTracker tracker = new AverageNativeMemoryUsageTracker(
             threadPool,
             TimeValue.timeValueMillis(500),
-            TimeValue.timeValueSeconds(30)
+            TimeValue.timeValueSeconds(30),
+            Settings.EMPTY
         );
         long usage = tracker.getUsage();
         assertThat(usage, greaterThanOrEqualTo(0L));
@@ -51,7 +53,8 @@ public class AverageNativeMemoryUsageTrackerTests extends OpenSearchTestCase {
         AverageNativeMemoryUsageTracker tracker = new AverageNativeMemoryUsageTracker(
             threadPool,
             TimeValue.timeValueMillis(100),
-            TimeValue.timeValueMillis(500)
+            TimeValue.timeValueMillis(500),
+            Settings.EMPTY
         );
         assertFalse(tracker.isReady());
         tracker.doStart();
