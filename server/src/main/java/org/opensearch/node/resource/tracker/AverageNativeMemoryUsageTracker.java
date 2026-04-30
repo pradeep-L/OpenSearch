@@ -71,14 +71,14 @@ public class AverageNativeMemoryUsageTracker extends AbstractAverageUsageTracker
       //  final long rustPluginHeapUsed = NativePluginMemoryProbe.getRustPluginHeapUsedBytes();
         final long jvmHeapUsed = osProbe.getJvmHeapUsed();
         LOGGER.info(
-            "Recording native memory usage: {}% (totalMemory={}B, usedMemory={}B, "
-                + "processRssAnonSmapsRollup={}B, processRssAnonymous={}B, jvmHeapUsed={}B)",
+            "Recording native memory usage: {}% (totalMemory={}MB, usedMemory={}MB, "
+                + "processRssAnonSmapsRollup={}MB, processRssAnonymous={}MB, jvmHeapUsed={}MB)",
             usage,
-            totalMemory,
-            usedMemory,
-            processRssAnon,
-            processRssAnonFromStatus,
-            jvmHeapUsed
+            totalMemory / (1024L * 1024L),
+            usedMemory / (1024L * 1024L),
+            processRssAnon / (1024L * 1024L),
+            processRssAnonFromStatus / (1024L * 1024L),
+            jvmHeapUsed / (1024L * 1024L)
         );
         return usage;
     }
