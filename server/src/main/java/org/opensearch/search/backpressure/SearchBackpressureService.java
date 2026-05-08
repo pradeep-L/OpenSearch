@@ -27,7 +27,9 @@ import org.opensearch.search.backpressure.stats.SearchShardTaskStats;
 import org.opensearch.search.backpressure.stats.SearchTaskStats;
 import org.opensearch.search.backpressure.trackers.CpuUsageTracker;
 import org.opensearch.search.backpressure.trackers.ElapsedTimeTracker;
+import org.opensearch.search.backpressure.trackers.GetActiveQueryMemoryStats;
 import org.opensearch.search.backpressure.trackers.HeapUsageTracker;
+import org.opensearch.search.backpressure.trackers.NativeMemoryUsageTracker;
 import org.opensearch.search.backpressure.trackers.NodeDuressTrackers;
 import org.opensearch.search.backpressure.trackers.NodeDuressTrackers.NodeDuressTracker;
 import org.opensearch.search.backpressure.trackers.TaskResourceUsageTrackerType;
@@ -74,7 +76,9 @@ public class SearchBackpressureService extends AbstractLifecycleComponent implem
         TaskResourceUsageTrackerType.HEAP_USAGE_TRACKER,
         (nodeDuressTrackers) -> isHeapTrackingSupported() && nodeDuressTrackers.isResourceInDuress(ResourceType.MEMORY),
         TaskResourceUsageTrackerType.ELAPSED_TIME_TRACKER,
-        (nodeDuressTrackers) -> true
+        (nodeDuressTrackers) -> true,
+        TaskResourceUsageTrackerType.NATIVE_MEMORY_USAGE_TRACKER,
+        (nodeDuressTrackers) -> nodeDuressTrackers.isResourceInDuress(ResourceType.NATIVE_MEMORY)
     );
     private volatile Scheduler.Cancellable scheduledFuture;
 
@@ -96,6 +100,34 @@ public class SearchBackpressureService extends AbstractLifecycleComponent implem
         TaskManager taskManager,
         WorkloadGroupService workloadGroupService
     ) {
+        // Backward-compat overload. If a plugin has registered native-memory suppliers via
+        // {@link NativeMemoryUsageTracker#registerSuppliers}, we pick those up here so the tracker becomes
+        // active in a running cluster. Otherwise we fall back to NativeMemoryUsageTracker.Suppliers.DISABLED
+        // and native-memory tracking stays off (R6.6, R6.7) — matching stock OpenSearch behavior.
+        this(
+            settings,
+            taskResourceTrackingService,
+            threadPool,
+            taskManager,
+            workloadGroupService,
+            NativeMemoryUsageTracker.getRegisteredSuppliers().runtimePtrSupplier,
+            NativeMemoryUsageTracker.getRegisteredSuppliers().poolLimitSupplier,
+            NativeMemoryUsageTracker.getRegisteredSuppliers().reservedBytesSupplier,
+            NativeMemoryUsageTracker.getRegisteredSuppliers().activeStatsProvider
+        );
+    }
+
+    public SearchBackpressureService(
+        SearchBackpressureSettings settings,
+        TaskResourceTrackingService taskResourceTrackingService,
+        ThreadPool threadPool,
+        TaskManager taskManager,
+        WorkloadGroupService workloadGroupService,
+        LongSupplier dataFusionRuntimePtrSupplier,
+        LongSupplier nativeMemoryPoolLimitSupplier,
+        LongSupplier nativeMemoryReservedBytesSupplier,
+        GetActiveQueryMemoryStats nativeMemoryActiveStatsProvider
+    ) {
         this(settings, taskResourceTrackingService, threadPool, System::nanoTime, new NodeDuressTrackers(new EnumMap<>(ResourceType.class) {
             {
                 put(
@@ -113,6 +145,41 @@ public class SearchBackpressureService extends AbstractLifecycleComponent implem
                             .getHeapThreshold(),
                         () -> settings.getNodeDuressSettings().getNumSuccessiveBreaches()
                     )
+                );
+                // Always insert a NATIVE_MEMORY entry so NodeDuressTrackers.updateCache() — which iterates
+                // ResourceType.values() unconditionally post Phase C — never NPEs on a missing key.
+                // When native-memory tracking is disabled (runtime ptr 0 / pool limit ≤ 0), the predicate
+                // short-circuits to false before any FFM call, per R2.2 / R2.3 / R2.4.
+                final java.util.concurrent.atomic.AtomicBoolean nativeDuressPrev = new java.util.concurrent.atomic.AtomicBoolean(false);
+                put(ResourceType.NATIVE_MEMORY, new NodeDuressTracker(() -> {
+                    long runtimePtr = dataFusionRuntimePtrSupplier.getAsLong();
+                    if (runtimePtr == 0L) {
+                        return false;                                   // R2.2
+                    }
+                    long poolLimit = nativeMemoryPoolLimitSupplier.getAsLong();
+                    if (poolLimit <= 0L) {
+                        return false;                                   // R2.3
+                    }
+                    long reserved = nativeMemoryReservedBytesSupplier.getAsLong();
+                    if (reserved < 0L) {
+                        return false;                                   // R2.4 bridge-level error sentinel
+                    }
+                    double pctUsed = (double) reserved / (double) poolLimit;
+                    double threshold = settings.getNodeDuressSettings().getNativeMemoryThreshold();
+                    boolean breached = pctUsed >= threshold;
+                    // State-transition log: only when the per-sample verdict flips, not every cycle.
+                    if (nativeDuressPrev.compareAndSet(!breached, breached)) {
+                        logger.info(
+                            "SBP-NM: native-memory duress sample {} (reserved={}, poolLimit={}, pctUsed={}%, threshold={}%)",
+                            breached ? "BREACHED" : "CLEARED",
+                            new org.opensearch.core.common.unit.ByteSizeValue(reserved),
+                            new org.opensearch.core.common.unit.ByteSizeValue(poolLimit),
+                            String.format(java.util.Locale.ROOT, "%.2f", pctUsed * 100.0),
+                            String.format(java.util.Locale.ROOT, "%.2f", threshold * 100.0)
+                        );
+                    }
+                    return breached;                                    // R2.5, R2.7
+                }, () -> settings.getNodeDuressSettings().getNumSuccessiveBreaches())              // R2.6
                 );
             }
         }),
@@ -132,7 +199,17 @@ public class SearchBackpressureService extends AbstractLifecycleComponent implem
                 settings.getSearchShardTaskSettings().getHeapMovingAverageWindowSize(),
                 settings.getSearchShardTaskSettings()::getElapsedTimeNanosThreshold,
                 settings.getClusterSettings(),
-                SearchShardTaskSettings.SETTING_HEAP_MOVING_AVERAGE_WINDOW_SIZE
+                SearchShardTaskSettings.SETTING_HEAP_MOVING_AVERAGE_WINDOW_SIZE,
+                // Native-memory tracker wiring — only populated for SearchShardTask. The tracker is registered only
+                // when native-memory tracking is enabled (runtime ptr non-zero AND pool limit > 0), per R6.6 / R6.7.
+                settings.getSearchShardTaskSettings()::getNativeHeapVarianceThreshold,
+                settings.getSearchShardTaskSettings()::getNativeHeapPercentThreshold,
+                nativeMemoryPoolLimitSupplier,
+                settings.getSearchShardTaskSettings().getNativeHeapMovingAverageWindowSize(),
+                SearchShardTaskSettings.SETTING_NATIVE_HEAP_MOVING_AVERAGE_WINDOW_SIZE,
+                isNativeMemoryTrackingEnabled(dataFusionRuntimePtrSupplier, nativeMemoryPoolLimitSupplier)
+                    ? nativeMemoryActiveStatsProvider
+                    : null
             ),
             taskManager,
             workloadGroupService
@@ -190,6 +267,27 @@ public class SearchBackpressureService extends AbstractLifecycleComponent implem
 
         if (nodeDuressTrackers.isNodeInDuress() == false) {
             return;
+        }
+
+        logger.info(
+            "SBP: cycle start — node in duress [cpu={}, heap={}, native_memory={}], mode={}",
+            nodeDuressTrackers.isResourceInDuress(ResourceType.CPU),
+            nodeDuressTrackers.isResourceInDuress(ResourceType.MEMORY),
+            nodeDuressTrackers.isResourceInDuress(ResourceType.NATIVE_MEMORY),
+            mode.getName()
+        );
+
+        // Refresh native-memory stats once per cycle before per-task evaluation (R1.1, R1.2). The tracker is only
+        // registered for SearchShardTask and only when native-memory tracking is enabled, so when the Optional is
+        // empty the call is a no-op. refreshStats() is engineered not to throw (R6.4); if the native bridge fails
+        // the previous snapshot is retained and the scheduler thread is unaffected.
+        TaskResourceUsageTrackers shardTrackers = taskTrackers.get(SearchShardTask.class);
+        if (shardTrackers != null) {
+            shardTrackers.getTracker(TaskResourceUsageTrackerType.NATIVE_MEMORY_USAGE_TRACKER).ifPresent(t -> {
+                if (t instanceof NativeMemoryUsageTracker) {
+                    ((NativeMemoryUsageTracker) t).refreshStats();
+                }
+            });
         }
 
         List<CancellableTask> searchTasks = getTaskByType(SearchTask.class);
@@ -365,7 +463,22 @@ public class SearchBackpressureService extends AbstractLifecycleComponent implem
     }
 
     /**
-     * Given the threshold suppliers, returns the list of applicable trackers
+     * Returns {@code true} iff native-memory tracking is enabled for this service. Native-memory tracking requires
+     * both a non-zero DataFusion runtime pointer AND a positive native-memory pool limit; when either is missing we
+     * treat the feature as disabled (no tracker registered, no duress, no FFM call — R6.6, R6.7).
+     */
+    public static boolean isNativeMemoryTrackingEnabled(LongSupplier runtimePtrSupplier, LongSupplier poolLimitSupplier) {
+        long runtimePtr = runtimePtrSupplier.getAsLong();
+        long poolLimit = poolLimitSupplier.getAsLong();
+        boolean enabled = runtimePtr != 0L && poolLimit > 0L;
+        logger.info("Native memory tracking enabled: [{}], runtimePtr: [{}], poolLimit: [{}]", enabled, runtimePtr, poolLimit);
+        return enabled;
+    }
+
+    /**
+     * Backward-compatible 7-arg form that does not register a {@link NativeMemoryUsageTracker}. Used for
+     * {@code SearchTask} (which never gets the native-memory tracker) and by external callers / tests that
+     * do not wire native-memory support.
      */
     public static TaskResourceUsageTrackers getTrackers(
         LongSupplier cpuThresholdSupplier,
@@ -375,6 +488,44 @@ public class SearchBackpressureService extends AbstractLifecycleComponent implem
         LongSupplier ElapsedTimeNanosSupplier,
         ClusterSettings clusterSettings,
         Setting<Integer> windowSizeSetting
+    ) {
+        return getTrackers(
+            cpuThresholdSupplier,
+            heapVarianceSupplier,
+            heapPercentThresholdSupplier,
+            heapMovingAverageWindowSize,
+            ElapsedTimeNanosSupplier,
+            clusterSettings,
+            windowSizeSetting,
+            null,
+            null,
+            null,
+            0,
+            null,
+            null
+        );
+    }
+
+    /**
+     * Given the threshold suppliers, returns the list of applicable trackers. When
+     * {@code nativeActiveStatsProvider} is {@code null} (or its companion suppliers are null / pool limit is
+     * non-positive), no {@link NativeMemoryUsageTracker} is registered — this is how the feature is disabled per
+     * R6.6 / R6.7. This overload is only used for {@code SearchShardTask}; {@code SearchTask} uses the 7-arg form.
+     */
+    public static TaskResourceUsageTrackers getTrackers(
+        LongSupplier cpuThresholdSupplier,
+        DoubleSupplier heapVarianceSupplier,
+        DoubleSupplier heapPercentThresholdSupplier,
+        int heapMovingAverageWindowSize,
+        LongSupplier ElapsedTimeNanosSupplier,
+        ClusterSettings clusterSettings,
+        Setting<Integer> windowSizeSetting,
+        DoubleSupplier nativeMemVarianceSupplier,
+        DoubleSupplier nativeMemPercentThresholdSupplier,
+        LongSupplier nativeMemoryLimitSupplier,
+        int nativeMemoryWindowSize,
+        Setting<Integer> nativeWindowSizeSetting,
+        GetActiveQueryMemoryStats nativeActiveStatsProvider
     ) {
         TaskResourceUsageTrackers trackers = new TaskResourceUsageTrackers();
         trackers.addTracker(new CpuUsageTracker(cpuThresholdSupplier), TaskResourceUsageTrackerType.CPU_USAGE_TRACKER);
@@ -396,6 +547,27 @@ public class SearchBackpressureService extends AbstractLifecycleComponent implem
             new ElapsedTimeTracker(ElapsedTimeNanosSupplier, System::nanoTime),
             TaskResourceUsageTrackerType.ELAPSED_TIME_TRACKER
         );
+        // Native-memory tracker registration (R6.6, R6.7, R8.3): only register when the full set of native-memory
+        // suppliers is provided AND the pool limit is positive. Any of these being null/absent disables the feature.
+        if (nativeActiveStatsProvider != null
+            && nativeMemVarianceSupplier != null
+            && nativeMemPercentThresholdSupplier != null
+            && nativeMemoryLimitSupplier != null
+            && nativeWindowSizeSetting != null
+            && nativeMemoryLimitSupplier.getAsLong() > 0L) {
+            trackers.addTracker(
+                new NativeMemoryUsageTracker(
+                    nativeMemVarianceSupplier,
+                    nativeMemPercentThresholdSupplier,
+                    nativeMemoryLimitSupplier,
+                    nativeMemoryWindowSize,
+                    clusterSettings,
+                    nativeWindowSizeSetting,
+                    nativeActiveStatsProvider
+                ),
+                TaskResourceUsageTrackerType.NATIVE_MEMORY_USAGE_TRACKER
+            );
+        }
         return trackers;
     }
 

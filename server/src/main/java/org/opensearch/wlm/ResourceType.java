@@ -26,13 +26,26 @@ import java.util.function.Function;
 @PublicApi(since = "2.17.0")
 public enum ResourceType {
     CPU("cpu", true, CpuUsageCalculator.INSTANCE, WorkloadManagementSettings::getNodeLevelCpuCancellationThreshold),
-    MEMORY("memory", true, MemoryUsageCalculator.INSTANCE, WorkloadManagementSettings::getNodeLevelMemoryCancellationThreshold);
+    MEMORY("memory", true, MemoryUsageCalculator.INSTANCE, WorkloadManagementSettings::getNodeLevelMemoryCancellationThreshold),
+    /**
+     * Added for SBP native-memory tracking (POC, sbp-native-memory-tracker-approach-a).
+     * Reuses {@link MemoryUsageCalculator} and the node-level memory cancellation
+     * threshold for the POC; real WLM-specific tuning is deferred. The containing
+     * {@code ResourceType} enum is {@code @PublicApi}, so this addition requires the
+     * {@code >breaking} PR label.
+     */
+    NATIVE_MEMORY(
+        "native_memory",
+        true,
+        MemoryUsageCalculator.INSTANCE,
+        WorkloadManagementSettings::getNodeLevelMemoryCancellationThreshold
+    );
 
     private final String name;
     private final boolean statsEnabled;
     private final ResourceUsageCalculator resourceUsageCalculator;
     private final Function<WorkloadManagementSettings, Double> nodeLevelThresholdSupplier;
-    private static List<ResourceType> sortedValues = List.of(CPU, MEMORY);
+    private static List<ResourceType> sortedValues = List.of(CPU, MEMORY, NATIVE_MEMORY);
 
     ResourceType(
         String name,

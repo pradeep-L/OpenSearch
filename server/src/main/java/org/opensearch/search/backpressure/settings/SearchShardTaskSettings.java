@@ -34,6 +34,9 @@ public class SearchShardTaskSettings {
         private static final double HEAP_PERCENT_THRESHOLD = 0.005;
         private static final double HEAP_VARIANCE_THRESHOLD = 2.0;
         private static final int HEAP_MOVING_AVERAGE_WINDOW_SIZE = 100;
+        private static final double NATIVE_HEAP_VARIANCE_THRESHOLD = 2.0;
+        private static final double NATIVE_HEAP_PERCENT_THRESHOLD = 0.005;
+        private static final int NATIVE_HEAP_MOVING_AVERAGE_WINDOW_SIZE = 100;
     }
 
     /**
@@ -161,6 +164,47 @@ public class SearchShardTaskSettings {
         Setting.Property.NodeScope
     );
 
+    /**
+     * Defines the native-memory usage variance for an individual search shard task before it is considered for cancellation.
+     * A task is considered for cancellation when its native-memory usage is greater than or equal to the native-memory
+     * moving average multiplied by this variance. Key uses the {@code native_heap_*} naming convention for symmetry with
+     * the existing {@code heap_*} keys even though the underlying memory is off-heap.
+     */
+    private volatile double nativeHeapVarianceThreshold;
+    public static final Setting<Double> SETTING_NATIVE_HEAP_VARIANCE_THRESHOLD = Setting.doubleSetting(
+        "search_backpressure.search_shard_task.native_heap_variance",
+        Defaults.NATIVE_HEAP_VARIANCE_THRESHOLD,
+        0.0,
+        Setting.Property.Dynamic,
+        Setting.Property.NodeScope
+    );
+
+    /**
+     * Defines the native-memory usage threshold (as a fraction of the configured native-memory pool limit) for an
+     * individual search shard task before it is considered for cancellation.
+     */
+    private volatile double nativeHeapPercentThreshold;
+    public static final Setting<Double> SETTING_NATIVE_HEAP_PERCENT_THRESHOLD = Setting.doubleSetting(
+        "search_backpressure.search_shard_task.native_heap_percent_threshold",
+        Defaults.NATIVE_HEAP_PERCENT_THRESHOLD,
+        0.0,
+        1.0,
+        Setting.Property.Dynamic,
+        Setting.Property.NodeScope
+    );
+
+    /**
+     * Defines the window size to calculate the moving average of native-memory usage of completed search shard tasks.
+     */
+    private volatile int nativeHeapMovingAverageWindowSize;
+    public static final Setting<Integer> SETTING_NATIVE_HEAP_MOVING_AVERAGE_WINDOW_SIZE = Setting.intSetting(
+        "search_backpressure.search_shard_task.native_heap_moving_average_window_size",
+        Defaults.NATIVE_HEAP_MOVING_AVERAGE_WINDOW_SIZE,
+        0,
+        Setting.Property.Dynamic,
+        Setting.Property.NodeScope
+    );
+
     public SearchShardTaskSettings(Settings settings, ClusterSettings clusterSettings) {
         totalHeapPercentThreshold = SETTING_TOTAL_HEAP_PERCENT_THRESHOLD.get(settings);
         this.cpuTimeMillisThreshold = SETTING_CPU_TIME_MILLIS_THRESHOLD.get(settings);
@@ -168,6 +212,9 @@ public class SearchShardTaskSettings {
         this.heapPercentThreshold = SETTING_HEAP_PERCENT_THRESHOLD.get(settings);
         this.heapVarianceThreshold = SETTING_HEAP_VARIANCE_THRESHOLD.get(settings);
         this.heapMovingAverageWindowSize = SETTING_HEAP_MOVING_AVERAGE_WINDOW_SIZE.get(settings);
+        this.nativeHeapVarianceThreshold = SETTING_NATIVE_HEAP_VARIANCE_THRESHOLD.get(settings);
+        this.nativeHeapPercentThreshold = SETTING_NATIVE_HEAP_PERCENT_THRESHOLD.get(settings);
+        this.nativeHeapMovingAverageWindowSize = SETTING_NATIVE_HEAP_MOVING_AVERAGE_WINDOW_SIZE.get(settings);
         this.cancellationRatio = SETTING_CANCELLATION_RATIO.get(settings);
         this.cancellationRate = SETTING_CANCELLATION_RATE.get(settings);
         this.cancellationBurst = SETTING_CANCELLATION_BURST.get(settings);
@@ -178,6 +225,12 @@ public class SearchShardTaskSettings {
         clusterSettings.addSettingsUpdateConsumer(SETTING_HEAP_PERCENT_THRESHOLD, this::setHeapPercentThreshold);
         clusterSettings.addSettingsUpdateConsumer(SETTING_HEAP_VARIANCE_THRESHOLD, this::setHeapVarianceThreshold);
         clusterSettings.addSettingsUpdateConsumer(SETTING_HEAP_MOVING_AVERAGE_WINDOW_SIZE, this::setHeapMovingAverageWindowSize);
+        clusterSettings.addSettingsUpdateConsumer(SETTING_NATIVE_HEAP_VARIANCE_THRESHOLD, this::setNativeHeapVarianceThreshold);
+        clusterSettings.addSettingsUpdateConsumer(SETTING_NATIVE_HEAP_PERCENT_THRESHOLD, this::setNativeHeapPercentThreshold);
+        clusterSettings.addSettingsUpdateConsumer(
+            SETTING_NATIVE_HEAP_MOVING_AVERAGE_WINDOW_SIZE,
+            this::setNativeHeapMovingAverageWindowSize
+        );
         clusterSettings.addSettingsUpdateConsumer(SETTING_CANCELLATION_RATIO, this::setCancellationRatio);
         clusterSettings.addSettingsUpdateConsumer(SETTING_CANCELLATION_RATE, this::setCancellationRate);
         clusterSettings.addSettingsUpdateConsumer(SETTING_CANCELLATION_BURST, this::setCancellationBurst);
@@ -207,6 +260,18 @@ public class SearchShardTaskSettings {
         return heapMovingAverageWindowSize;
     }
 
+    public double getNativeHeapVarianceThreshold() {
+        return nativeHeapVarianceThreshold;
+    }
+
+    public double getNativeHeapPercentThreshold() {
+        return nativeHeapPercentThreshold;
+    }
+
+    public int getNativeHeapMovingAverageWindowSize() {
+        return nativeHeapMovingAverageWindowSize;
+    }
+
     public void setTotalHeapPercentThreshold(double totalHeapPercentThreshold) {
         this.totalHeapPercentThreshold = totalHeapPercentThreshold;
     }
@@ -229,6 +294,18 @@ public class SearchShardTaskSettings {
 
     public void setHeapMovingAverageWindowSize(int heapMovingAverageWindowSize) {
         this.heapMovingAverageWindowSize = heapMovingAverageWindowSize;
+    }
+
+    public void setNativeHeapVarianceThreshold(double nativeHeapVarianceThreshold) {
+        this.nativeHeapVarianceThreshold = nativeHeapVarianceThreshold;
+    }
+
+    public void setNativeHeapPercentThreshold(double nativeHeapPercentThreshold) {
+        this.nativeHeapPercentThreshold = nativeHeapPercentThreshold;
+    }
+
+    public void setNativeHeapMovingAverageWindowSize(int nativeHeapMovingAverageWindowSize) {
+        this.nativeHeapMovingAverageWindowSize = nativeHeapMovingAverageWindowSize;
     }
 
     public double getCancellationRatio() {

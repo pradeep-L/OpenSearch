@@ -10,6 +10,7 @@ package org.opensearch.be.datafusion;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.opensearch.be.datafusion.probe.ActiveQueryStatsFfmProbe;
 import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.settings.Setting;
@@ -70,6 +71,7 @@ public class DataFusionPlugin extends Plugin implements SearchBackEndPlugin<Data
     private volatile DataFusionService dataFusionService;
     private volatile DataFormatRegistry dataFormatRegistry;
     private volatile SimpleExtension.ExtensionCollection substraitExtensions;
+    private volatile ActiveQueryStatsFfmProbe activeQueryStatsFfmProbe;
 
     /**
      * Creates the DataFusion plugin.
@@ -105,7 +107,40 @@ public class DataFusionPlugin extends Plugin implements SearchBackEndPlugin<Data
         dataFusionService.start();
         logger.debug("DataFusion plugin initialized — memory pool {}B, spill limit {}B", memoryPoolLimit, spillMemoryLimit);
 
+        // Bridge native-memory tracking into core SearchBackpressureService (POC). This MUST happen before
+        // Node.java constructs SearchBackpressureService (which reads these suppliers via its 5-arg
+        // backward-compat constructor). createComponents runs before SBP construction per Node.java.
+        final long poolLimitForSbp = memoryPoolLimit;
+        org.opensearch.search.backpressure.trackers.NativeMemoryUsageTracker.registerSuppliers(
+            new org.opensearch.search.backpressure.trackers.NativeMemoryUsageTracker.Suppliers(() -> {
+                NativeRuntimeHandle h = dataFusionService.getNativeRuntime();
+                return h.isOpen() ? h.get() : 0L;
+            }, () -> poolLimitForSbp, () -> {
+                NativeRuntimeHandle h = dataFusionService.getNativeRuntime();
+                if (!h.isOpen()) return -1L;
+                try {
+                    return org.opensearch.be.datafusion.nativelib.NativeBridge.getMemoryPoolUsage(h.get());
+                } catch (RuntimeException e) {
+                    logger.debug("getMemoryPoolUsage failed; reporting -1 as error sentinel", e);
+                    return -1L;
+                }
+            }, new DataFusionActiveQueryMemoryStats())
+        );
+        logger.info("Wired DataFusion runtime into SearchBackpressureService native-memory tracker");
+
         this.substraitExtensions = loadSubstraitExtensions();
+
+        // POC debug probe: periodically sample active-query native-memory stats via the FFM
+        // binding and log the decoded triples plus the call latency. Off by default; opt in
+        // with -Dopensearch.datafusion.active_query_stats_probe.enabled=true. See
+        // .kiro/specs/active-query-stats-ffm-probe/.
+        String probeEnabledRaw = System.getProperty("opensearch.datafusion.active_query_stats_probe.enabled");
+        if (probeEnabledRaw != null && Boolean.parseBoolean(probeEnabledRaw.trim())) {
+            this.activeQueryStatsFfmProbe = new ActiveQueryStatsFfmProbe();
+            this.activeQueryStatsFfmProbe.start();
+        } else {
+            logger.debug("active query stats FFM probe disabled (system property not set to true)");
+        }
 
         return Collections.singletonList(dataFusionService);
     }
@@ -150,6 +185,9 @@ public class DataFusionPlugin extends Plugin implements SearchBackEndPlugin<Data
 
     @Override
     public void close() throws IOException {
+        if (activeQueryStatsFfmProbe != null) {
+            activeQueryStatsFfmProbe.close();
+        }
         if (dataFusionService != null) {
             dataFusionService.close();
         }

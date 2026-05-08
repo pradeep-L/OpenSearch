@@ -53,6 +53,8 @@ public final class NativeBridge {
     private static final MethodHandle SQL_TO_SUBSTRAIT;
     private static final MethodHandle INIT_HEAP;
     private static final MethodHandle GET_MEMORY_POOL_USAGE;
+    private static final MethodHandle ACTIVE_QUERY_STATS_SIZE;
+    private static final MethodHandle ACTIVE_QUERY_STATS_COPY;
     private static final MethodHandle DF_ALLOCATE_TEST_BUFFER;
     private static final MethodHandle DF_FREE_TEST_BUFFER;
 
@@ -143,13 +145,35 @@ public final class NativeBridge {
             )
         );
 
-        INIT_HEAP = linker.downcallHandle(
-            lib.find("df_init_heap").orElseThrow(),
-            FunctionDescriptor.ofVoid()
-        );
+        INIT_HEAP = linker.downcallHandle(lib.find("df_init_heap").orElseThrow(), FunctionDescriptor.ofVoid());
         GET_MEMORY_POOL_USAGE = linker.downcallHandle(
             lib.find("df_get_memory_pool_usage").orElseThrow(),
             FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG)
+        );
+
+        // Two-phase snapshot protocol for active per-query DataFusion memory stats.
+        //
+        // Phase 1: i64 df_active_query_stats_size(out_size: *mut i64)
+        // Writes the active triple count N (not a long count) into *out_size.
+        // Phase 2: i64 df_active_query_stats_copy(out_ptr: *mut i64, out_cap: i64, out_len: *mut i64)
+        // Writes up to out_cap / 3 (ctx, current, peak) triples into out_ptr in iteration
+        // order; sets *out_len to the number of i64s actually written (always a multiple of 3,
+        // always <= out_cap). Truncates silently when the registry grew between phases.
+        ACTIVE_QUERY_STATS_SIZE = linker.downcallHandle(
+            lib.find("df_active_query_stats_size").orElseThrow(),
+            FunctionDescriptor.of(
+                ValueLayout.JAVA_LONG,    // return status (0 = ok, < 0 = negated error-string ptr)
+                ValueLayout.ADDRESS       // out_size (single-long out pointer, triple count)
+            )
+        );
+        ACTIVE_QUERY_STATS_COPY = linker.downcallHandle(
+            lib.find("df_active_query_stats_copy").orElseThrow(),
+            FunctionDescriptor.of(
+                ValueLayout.JAVA_LONG,    // return status (0 = ok, < 0 = negated error-string ptr)
+                ValueLayout.ADDRESS,      // out_ptr (i64 buffer, capacity >= out_cap longs)
+                ValueLayout.JAVA_LONG,    // out_cap (number of longs; non-negative multiple of 3)
+                ValueLayout.ADDRESS       // out_len (single-long out pointer, in longs written)
+            )
         );
         DF_ALLOCATE_TEST_BUFFER = linker.downcallHandle(
             lib.find("df_allocate_test_buffer").orElseThrow(),
@@ -288,6 +312,106 @@ public final class NativeBridge {
             return (long) GET_MEMORY_POOL_USAGE.invokeExact(runtimePtr);
         } catch (Throwable t) {
             throw new RuntimeException("getMemoryPoolUsage failed", t);
+        }
+    }
+
+    /**
+     * Returns active per-query DataFusion memory stats as a flat {@code long[]} using the
+     * two-phase size-then-copy FFM protocol.
+     *
+     * <p>Wire layout: {@code [ctx0, current0, peak0, ctx1, current1, peak1, ...]} — the
+     * returned array length is always a multiple of 3. Returns an empty array ({@code long[0]})
+     * when no queries are active.
+     *
+     * <h4>Protocol</h4>
+     * <ol>
+     *   <li>Open a single confined {@link NativeCall} (and its underlying {@code Arena}).</li>
+     *   <li><b>Phase 1</b>: invoke {@code df_active_query_stats_size} and read {@code *out_size}
+     *       as the active triple count {@code N}.</li>
+     *   <li>Fast path: when {@code N == 0}, return {@code new long[0]} without making the
+     *       Phase 2 call.</li>
+     *   <li><b>Phase 2</b>: allocate a {@code 3 * N} long buffer in the same {@code Arena},
+     *       invoke {@code df_active_query_stats_copy} with {@code out_cap = 3 * N}, and read
+     *       {@code *out_len} as the authoritative long count {@code writtenLongs}.</li>
+     *   <li>Copy exactly {@code writtenLongs} longs into a fresh JVM {@code long[]} before the
+     *       {@code Arena} closes, so the returned array is Arena-lifetime-independent.</li>
+     * </ol>
+     *
+     * <h4>Race semantics between Phase 1 and Phase 2</h4>
+     * <p>The native {@code QUERY_REGISTRY} is not frozen between the two calls. Two legitimate
+     * outcomes follow:
+     * <ul>
+     *   <li>{@code writtenLongs < 3 * N}: queries completed between Phase 1 and Phase 2, so
+     *       Phase 2 produced fewer triples than Phase 1 counted. The returned array has length
+     *       {@code writtenLongs}; it is <b>not</b> padded back to {@code 3 * N}.</li>
+     *   <li>{@code writtenLongs == 3 * N}: either the registry was stable, or it grew and
+     *       Phase 2 silently truncated the overflow. Newly-registered queries that did not fit
+     *       will be observed on the next SBP cycle.</li>
+     * </ul>
+     *
+     * <h4>Lifetime contract</h4>
+     * <p>Uses the existing {@link NativeCall#buf(int)} and {@link NativeCall#longOut()} helpers;
+     * the confined {@code Arena} owned by the single {@link NativeCall} is shared across both
+     * phase calls inside one try-with-resources block. No new SPI helper is required.
+     *
+     * <h4>Safety cap</h4>
+     * <p>The triple count reported by Phase 1 is bounded to {@code 8_000_000} triples
+     * (~192 MB) before Phase 2 is attempted. The expected hardware ceiling is ~85 concurrent
+     * queries; the cap exists only to prevent a runaway size probe from requesting a multi-GB
+     * {@code Arena} allocation. Exceeding the cap throws {@link RuntimeException}.
+     *
+     * <h4>Errors</h4>
+     * <p>Any {@link RuntimeException} raised by either phase (negative native status, invalid
+     * length reported by Phase 2, allocation failures) is propagated unchanged. The caller
+     * should treat such failures as "skip this cycle" rather than retrying.
+     *
+     * @return a non-null {@code long[]} whose length is a multiple of 3
+     * @throws RuntimeException if either native phase fails or the safety cap is exceeded
+     */
+    public static long[] getActiveQueryStats() {
+        try (var call = new NativeCall()) {
+            // --- Phase 1: size probe ---
+            var sizeOut = call.longOut();
+            call.invoke(ACTIVE_QUERY_STATS_SIZE, sizeOut);
+            long nTriples = sizeOut.get(ValueLayout.JAVA_LONG, 0);
+            if (nTriples < 0) {
+                throw new RuntimeException("df_active_query_stats_size: native reported negative triple count " + nTriples);
+            }
+
+            // Fast path: empty registry — skip Phase 2.
+            if (nTriples == 0L) {
+                return new long[0];
+            }
+
+            // --- Phase 2: copy ---
+            // Cap the allocation to a sane upper bound so a runaway size probe never attempts
+            // a multi-GB Arena allocation. 8M triples (24M longs, 192 MB) is well above the
+            // documented "expected hardware" ceiling (~85 concurrent queries).
+            final long maxTriples = 8_000_000L;
+            if (nTriples > maxTriples) {
+                throw new RuntimeException("df_active_query_stats_size: triple count " + nTriples + " exceeds safety cap " + maxTriples);
+            }
+            int capLongs = Math.toIntExact(nTriples * 3L);
+            var buf = call.buf(capLongs * Long.BYTES);
+            var lenOut = call.longOut();
+            call.invoke(ACTIVE_QUERY_STATS_COPY, buf, (long) capLongs, lenOut);
+
+            int writtenLongs = Math.toIntExact(lenOut.get(ValueLayout.JAVA_LONG, 0));
+            if (writtenLongs < 0 || writtenLongs > capLongs || writtenLongs % 3 != 0) {
+                throw new RuntimeException(
+                    "df_active_query_stats_copy: native reported invalid length " + writtenLongs + " for cap " + capLongs
+                );
+            }
+
+            // Copy native buffer into a JVM long[] BEFORE the Arena closes so the caller holds
+            // an Arena-lifetime-independent array. writtenLongs may be < capLongs (queries
+            // completed between Phase 1 and Phase 2) or == capLongs (registry stable, or it
+            // grew and Phase 2 silently truncated — either way, we took what Phase 2 gave us).
+            long[] out = new long[writtenLongs];
+            for (int i = 0; i < writtenLongs; i++) {
+                out[i] = buf.get(ValueLayout.JAVA_LONG, (long) i * Long.BYTES);
+            }
+            return out;
         }
     }
 

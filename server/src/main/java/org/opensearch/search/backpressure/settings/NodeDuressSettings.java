@@ -22,6 +22,7 @@ public class NodeDuressSettings {
         private static final int NUM_SUCCESSIVE_BREACHES = 3;
         private static final double CPU_THRESHOLD = 0.9;
         private static final double HEAP_THRESHOLD = 0.7;
+        private static final double NATIVE_MEMORY_THRESHOLD = 0.85;
     }
 
     /**
@@ -62,6 +63,21 @@ public class NodeDuressSettings {
         Setting.Property.NodeScope
     );
 
+    /**
+     * Defines the native-memory usage threshold (as a fraction of the configured
+     * DataFusion {@code GreedyMemoryPool} limit) for a node to be considered "in duress"
+     * with respect to off-heap / native memory.
+     */
+    private volatile double nativeMemoryThreshold;
+    public static final Setting<Double> SETTING_NATIVE_MEMORY_THRESHOLD = Setting.doubleSetting(
+        "search_backpressure.node_duress.native_memory_threshold",
+        Defaults.NATIVE_MEMORY_THRESHOLD,
+        0.0,
+        1.0,
+        Setting.Property.Dynamic,
+        Setting.Property.NodeScope
+    );
+
     public NodeDuressSettings(Settings settings, ClusterSettings clusterSettings) {
         numSuccessiveBreaches = SETTING_NUM_SUCCESSIVE_BREACHES.get(settings);
         clusterSettings.addSettingsUpdateConsumer(SETTING_NUM_SUCCESSIVE_BREACHES, this::setNumSuccessiveBreaches);
@@ -71,6 +87,9 @@ public class NodeDuressSettings {
 
         heapThreshold = SETTING_HEAP_THRESHOLD.get(settings);
         clusterSettings.addSettingsUpdateConsumer(SETTING_HEAP_THRESHOLD, this::setHeapThreshold);
+
+        nativeMemoryThreshold = SETTING_NATIVE_MEMORY_THRESHOLD.get(settings);
+        clusterSettings.addSettingsUpdateConsumer(SETTING_NATIVE_MEMORY_THRESHOLD, this::setNativeMemoryThreshold);
     }
 
     public int getNumSuccessiveBreaches() {
@@ -95,5 +114,13 @@ public class NodeDuressSettings {
 
     private void setHeapThreshold(double heapThreshold) {
         this.heapThreshold = heapThreshold;
+    }
+
+    public double getNativeMemoryThreshold() {
+        return nativeMemoryThreshold;
+    }
+
+    private void setNativeMemoryThreshold(double nativeMemoryThreshold) {
+        this.nativeMemoryThreshold = nativeMemoryThreshold;
     }
 }
