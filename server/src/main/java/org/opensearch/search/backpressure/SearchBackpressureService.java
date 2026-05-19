@@ -61,7 +61,6 @@ import java.util.function.LongSupplier;
 import java.util.stream.Collectors;
 
 import static org.opensearch.search.backpressure.trackers.HeapUsageTracker.isHeapTrackingSupported;
-import static org.opensearch.search.backpressure.trackers.NativeMemoryUsageTracker.isNativeTrackingSupported;
 
 /**
  * SearchBackpressureService is responsible for monitoring and cancelling in-flight search tasks if they are
@@ -90,7 +89,8 @@ public class SearchBackpressureService extends AbstractLifecycleComponent implem
         TaskResourceUsageTrackerType.ELAPSED_TIME_TRACKER,
         (nodeDuressTrackers) -> true,
         TaskResourceUsageTrackerType.NATIVE_MEMORY_USAGE_TRACKER,
-        (nodeDuressTrackers) -> isNativeTrackingSupported() && nodeDuressTrackers.isResourceInDuress(ResourceType.NATIVE_MEMORY)
+        (nodeDuressTrackers) -> NativeMemoryUsageService.getInstance().hasSnapshotProvider()
+            && nodeDuressTrackers.isResourceInDuress(ResourceType.NATIVE_MEMORY)
     );
 
     private volatile Scheduler.Cancellable scheduledFuture;
@@ -133,18 +133,19 @@ public class SearchBackpressureService extends AbstractLifecycleComponent implem
                     )
                 );
                 put(ResourceType.NATIVE_MEMORY, new NodeDuressTracker(() -> {
-                    double used = OsProbe.getInstance().getProcessNativeMemoryBytes();
-                    double totalNative = settings.getNodeDuressSettings().getNodeNativeMemory();
-                    if (totalNative <= 0) {
+                    NativeMemoryUsageService svc = NativeMemoryUsageService.getInstance();
+                    long budget = svc.getBudgetBytes();
+                    if (budget <= 0L) {
                         return false;
                     }
-                    double usedFraction = used / totalNative;
-                    if (usedFraction < 0.0d) {
+                    double used = OsProbe.getInstance().getProcessNativeMemoryBytes();
+                    if (used < 0.0d) {
                         if (logger.isDebugEnabled()) {
                             logger.debug("native memory duress probe: signal unavailable (usedBytes={})", used);
                         }
                         return false;
                     }
+                    double usedFraction = used / budget;
                     double threshold = settings.getNodeDuressSettings().getNativeMemoryThreshold();
                     boolean breached = usedFraction >= threshold;
                     if (logger.isDebugEnabled()) {
@@ -445,7 +446,7 @@ public class SearchBackpressureService extends AbstractLifecycleComponent implem
             new ElapsedTimeTracker(ElapsedTimeNanosSupplier, System::nanoTime),
             TaskResourceUsageTrackerType.ELAPSED_TIME_TRACKER
         );
-        if (isNativeTrackingSupported()) {
+        if (NativeMemoryUsageService.getInstance().hasSnapshotProvider()) {
             trackers.addTracker(
                 new NativeMemoryUsageTracker(nativeMemoryPercentThresholdSupplier),
                 TaskResourceUsageTrackerType.NATIVE_MEMORY_USAGE_TRACKER
