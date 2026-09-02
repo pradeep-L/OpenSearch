@@ -280,6 +280,7 @@ public final class ClusterSettings extends AbstractScopedSettings {
             Arrays.asList(
                 AwarenessAllocationDecider.CLUSTER_ROUTING_ALLOCATION_AWARENESS_ATTRIBUTE_SETTING,
                 AwarenessAllocationDecider.CLUSTER_ROUTING_ALLOCATION_AWARENESS_FORCE_GROUP_SETTING,
+                AwarenessAllocationDecider.CLUSTER_ROUTING_ALLOCATION_AWARENESS_IGNORE_EXCLUDED_NODES_SETTING,
                 AwarenessReplicaBalance.CLUSTER_ROUTING_ALLOCATION_AWARENESS_BALANCE_SETTING,
                 BalancedShardsAllocator.INDEX_BALANCE_FACTOR_SETTING,
                 BalancedShardsAllocator.SHARD_BALANCE_FACTOR_SETTING,

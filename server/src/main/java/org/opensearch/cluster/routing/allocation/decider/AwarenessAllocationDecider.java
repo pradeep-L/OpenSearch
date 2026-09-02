@@ -32,7 +32,11 @@
 
 package org.opensearch.cluster.routing.allocation.decider;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.opensearch.cluster.metadata.IndexMetadata;
+import org.opensearch.cluster.node.DiscoveryNode;
+import org.opensearch.cluster.node.DiscoveryNodeFilters;
 import org.opensearch.cluster.routing.RoutingNode;
 import org.opensearch.cluster.routing.ShardRouting;
 import org.opensearch.cluster.routing.allocation.RoutingAllocation;
@@ -52,6 +56,7 @@ import java.util.stream.Collectors;
 
 import static java.util.Collections.emptyList;
 import static org.opensearch.cluster.metadata.IndexMetadata.INDEX_AUTO_EXPAND_REPLICAS_SETTING;
+import static org.opensearch.cluster.node.DiscoveryNodeFilters.OpType.OR;
 
 /**
  * This {@link AllocationDecider} controls shard allocation based on
@@ -97,6 +102,8 @@ import static org.opensearch.cluster.metadata.IndexMetadata.INDEX_AUTO_EXPAND_RE
  */
 public class AwarenessAllocationDecider extends AllocationDecider {
 
+    private static final Logger logger = LogManager.getLogger(AwarenessAllocationDecider.class);
+
     public static final String NAME = "awareness";
 
     public static final Setting<List<String>> CLUSTER_ROUTING_ALLOCATION_AWARENESS_ATTRIBUTE_SETTING = Setting.listSetting(
@@ -112,8 +119,23 @@ public class AwarenessAllocationDecider extends AllocationDecider {
         Property.NodeScope
     );
 
+    /**
+     * When enabled, attribute values (e.g. zones) whose nodes are all excluded by the cluster-level
+     * allocation exclude filters ({@code cluster.routing.allocation.exclude.*}) are not counted towards
+     * the awareness balance. This allows a fully-drained attribute value to drop out of the balance so
+     * shards can consolidate onto the remaining values, for example when replacing all nodes in a zone.
+     * Defaults to {@code false} to preserve the historical behavior.
+     */
+    public static final Setting<Boolean> CLUSTER_ROUTING_ALLOCATION_AWARENESS_IGNORE_EXCLUDED_NODES_SETTING = Setting.boolSetting(
+        "cluster.routing.allocation.awareness.ignore_excluded_nodes",
+        false,
+        Property.Dynamic,
+        Property.NodeScope
+    );
+
     private volatile List<String> awarenessAttributes;
     private volatile Map<String, List<String>> forcedAwarenessAttributes;
+    private volatile boolean ignoreExcludedNodes;
 
     public AwarenessAllocationDecider(Settings settings, ClusterSettings clusterSettings) {
         this.awarenessAttributes = CLUSTER_ROUTING_ALLOCATION_AWARENESS_ATTRIBUTE_SETTING.get(settings);
@@ -123,6 +145,15 @@ public class AwarenessAllocationDecider extends AllocationDecider {
             CLUSTER_ROUTING_ALLOCATION_AWARENESS_FORCE_GROUP_SETTING,
             this::setForcedAwarenessAttributes
         );
+        this.ignoreExcludedNodes = CLUSTER_ROUTING_ALLOCATION_AWARENESS_IGNORE_EXCLUDED_NODES_SETTING.get(settings);
+        clusterSettings.addSettingsUpdateConsumer(
+            CLUSTER_ROUTING_ALLOCATION_AWARENESS_IGNORE_EXCLUDED_NODES_SETTING,
+            this::setIgnoreExcludedNodes
+        );
+    }
+
+    private void setIgnoreExcludedNodes(boolean ignoreExcludedNodes) {
+        this.ignoreExcludedNodes = ignoreExcludedNodes;
     }
 
     private void setForcedAwarenessAttributes(Settings forceSettings) {
@@ -194,6 +225,13 @@ public class AwarenessAllocationDecider extends AllocationDecider {
                 numberOfAttributes = attributesSet.size();
             }
 
+            if (numberOfAttributes == 0) {
+                // Can happen only when ignore_excluded_nodes is enabled and every node for this attribute is
+                // excluded. There is nothing to balance across, so do not veto here; other deciders (e.g. the
+                // filter decider) will prevent allocation onto the excluded nodes.
+                continue;
+            }
+
             // TODO should we remove ones that are not part of full list?
             final int maximumNodeCount = (shardCount + numberOfAttributes - 1) / numberOfAttributes; // ceil(shardCount/numberOfAttributes)
             if (currentNodeCount > maximumNodeCount) {
@@ -216,8 +254,53 @@ public class AwarenessAllocationDecider extends AllocationDecider {
     }
 
     private Set<String> getAttributeValues(ShardRouting shardRouting, RoutingAllocation allocation, String awarenessAttribute) {
-        return allocation.routingNodes()
-            .nodesPerAttributesCounts(awarenessAttribute, routingNode -> routingNode.node().isSearchNode() == shardRouting.isSearchOnly());
+        if (ignoreExcludedNodes == false) {
+            logger.info("awareness [{}]: using default path (ignore_excluded_nodes=false)", awarenessAttribute);
+            return allocation.routingNodes()
+                .nodesPerAttributesCounts(
+                    awarenessAttribute,
+                    routingNode -> routingNode.node().isSearchNode() == shardRouting.isSearchOnly()
+                );
+        }
+
+        logger.info("awareness [{}]: using exclusion-aware path (ignore_excluded_nodes=true)", awarenessAttribute);
+
+        // When enabled, do not count an attribute value whose nodes are all excluded by the cluster-level
+        // allocation exclude filters. A value is dropped only when every node carrying it is excluded; if a
+        // single non-excluded node remains, the value still counts. This lets a fully-drained value (e.g. a
+        // zone being replaced) leave the awareness balance so shards can consolidate onto the remaining values.
+        final DiscoveryNodeFilters excludeFilters = DiscoveryNodeFilters.trimTier(
+            DiscoveryNodeFilters.buildOrUpdateFromKeyValue(
+                null,
+                OR,
+                FilterAllocationDecider.CLUSTER_ROUTING_EXCLUDE_GROUP_SETTING.getAsMap(allocation.clusterSettings())
+            )
+        );
+
+        final Set<String> attributeValues = new HashSet<>();
+        for (final RoutingNode routingNode : allocation.routingNodes()) {
+            final DiscoveryNode node = routingNode.node();
+            // only consider nodes of the same type as the shard (search nodes for search-only shards)
+            if (node.isSearchNode() != shardRouting.isSearchOnly()) {
+                continue;
+            }
+            // skip nodes excluded by the cluster exclude filter (_ip, _id, _name, _host, or node attributes)
+            if (excludeFilters != null && excludeFilters.match(node)) {
+                logger.info(
+                    "awareness [{}]: excluding node [{}] (attribute value [{}]) from the attribute-value count "
+                        + "because it matches the cluster exclude filter",
+                    awarenessAttribute,
+                    node.getId(),
+                    node.getAttributes().get(awarenessAttribute)
+                );
+                continue;
+            }
+            final String value = node.getAttributes().get(awarenessAttribute);
+            if (value != null) {
+                attributeValues.add(value);
+            }
+        }
+        return attributeValues;
     }
 
     private int getCurrentNodeCountForAttribute(
