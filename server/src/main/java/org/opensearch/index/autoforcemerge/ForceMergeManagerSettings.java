@@ -32,6 +32,9 @@ public class ForceMergeManagerSettings {
     private Double jvmThreshold;
     private Integer concurrencyMultiplier;
     private Boolean autoForceMergeFeatureEnabled;
+    // volatile: written by the cluster settings-update consumer but read from the force merge thread
+    // (TransportForceMergeAction -> AutoForceMergeManager#shouldRejectForceMerge), so the toggle must be visible across threads.
+    private volatile Boolean forceMergeDuressCheckEnabled;
     private final Consumer<TimeValue> modifySchedulerInterval;
 
     /**
@@ -39,6 +42,21 @@ public class ForceMergeManagerSettings {
      */
     public static final Setting<Boolean> AUTO_FORCE_MERGE_SETTING = Setting.boolSetting(
         "cluster.auto_force_merge.enabled",
+        false,
+        Setting.Property.Dynamic,
+        Setting.Property.NodeScope
+    );
+
+    /**
+     * Setting to apply the node-duress guardrail to user-triggered force merge (default: false).
+     * <p>
+     * When enabled, a force merge submitted through the {@code _forcemerge} API is rejected on any
+     * node that is currently in duress (CPU, JVM heap, or disk usage over the auto force merge
+     * thresholds), unless the request explicitly sets {@code ignore_duress=true}. This extends the
+     * same node-health check that auto force merge already applies to the user-facing API.
+     */
+    public static final Setting<Boolean> FORCE_MERGE_DURESS_CHECK_ENABLED = Setting.boolSetting(
+        "cluster.force_merge.duress_check.enabled",
         false,
         Setting.Property.Dynamic,
         Setting.Property.NodeScope
@@ -148,6 +166,8 @@ public class ForceMergeManagerSettings {
         this.modifySchedulerInterval = modifySchedulerInterval;
         this.autoForceMergeFeatureEnabled = AUTO_FORCE_MERGE_SETTING.get(settings);
         clusterSettings.addSettingsUpdateConsumer(AUTO_FORCE_MERGE_SETTING, this::setAutoForceMergeFeatureEnabled);
+        this.forceMergeDuressCheckEnabled = FORCE_MERGE_DURESS_CHECK_ENABLED.get(settings);
+        clusterSettings.addSettingsUpdateConsumer(FORCE_MERGE_DURESS_CHECK_ENABLED, this::setForceMergeDuressCheckEnabled);
         this.schedulerInterval = AUTO_FORCE_MERGE_SCHEDULER_INTERVAL.get(settings);
         clusterSettings.addSettingsUpdateConsumer(AUTO_FORCE_MERGE_SCHEDULER_INTERVAL, this::setSchedulerInterval);
         this.forcemergeDelay = MERGE_DELAY_BETWEEN_SHARDS_FOR_AUTO_FORCE_MERGE.get(settings);
@@ -172,6 +192,14 @@ public class ForceMergeManagerSettings {
 
     public Boolean isAutoForceMergeFeatureEnabled() {
         return this.autoForceMergeFeatureEnabled;
+    }
+
+    public void setForceMergeDuressCheckEnabled(Boolean forceMergeDuressCheckEnabled) {
+        this.forceMergeDuressCheckEnabled = forceMergeDuressCheckEnabled;
+    }
+
+    public Boolean isForceMergeDuressCheckEnabled() {
+        return this.forceMergeDuressCheckEnabled;
     }
 
     public void setSegmentCount(Integer segmentCount) {

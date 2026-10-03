@@ -939,6 +939,7 @@ public final class ClusterSettings extends AbstractScopedSettings {
 
                 // Settings related to Auto Force Merge Manager
                 ForceMergeManagerSettings.AUTO_FORCE_MERGE_SETTING,
+                ForceMergeManagerSettings.FORCE_MERGE_DURESS_CHECK_ENABLED,
                 ForceMergeManagerSettings.AUTO_FORCE_MERGE_SCHEDULER_INTERVAL,
                 ForceMergeManagerSettings.TRANSLOG_AGE_AUTO_FORCE_MERGE,
                 ForceMergeManagerSettings.SEGMENT_COUNT_FOR_AUTO_FORCE_MERGE,

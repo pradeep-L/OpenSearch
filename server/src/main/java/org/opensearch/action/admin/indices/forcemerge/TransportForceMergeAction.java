@@ -44,6 +44,8 @@ import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.inject.Inject;
 import org.opensearch.core.action.support.DefaultShardOperationFailedException;
 import org.opensearch.core.common.io.stream.StreamInput;
+import org.opensearch.core.concurrency.OpenSearchRejectedExecutionException;
+import org.opensearch.index.autoforcemerge.AutoForceMergeManager;
 import org.opensearch.index.shard.IndexShard;
 import org.opensearch.indices.IndicesService;
 import org.opensearch.threadpool.ThreadPool;
@@ -63,6 +65,7 @@ public class TransportForceMergeAction extends TransportBroadcastByNodeAction<
     TransportBroadcastByNodeAction.EmptyResult> {
 
     private final IndicesService indicesService;
+    private final AutoForceMergeManager autoForceMergeManager;
 
     @Inject
     public TransportForceMergeAction(
@@ -70,7 +73,8 @@ public class TransportForceMergeAction extends TransportBroadcastByNodeAction<
         TransportService transportService,
         IndicesService indicesService,
         ActionFilters actionFilters,
-        IndexNameExpressionResolver indexNameExpressionResolver
+        IndexNameExpressionResolver indexNameExpressionResolver,
+        AutoForceMergeManager autoForceMergeManager
     ) {
         super(
             ForceMergeAction.NAME,
@@ -82,6 +86,7 @@ public class TransportForceMergeAction extends TransportBroadcastByNodeAction<
             ThreadPool.Names.FORCE_MERGE
         );
         this.indicesService = indicesService;
+        this.autoForceMergeManager = autoForceMergeManager;
     }
 
     @Override
@@ -109,6 +114,18 @@ public class TransportForceMergeAction extends TransportBroadcastByNodeAction<
 
     @Override
     protected EmptyResult shardOperation(ForceMergeRequest request, ShardRouting shardRouting) throws IOException {
+        // Extend the auto force merge node-duress guardrail to user-triggered force merges: when the node is
+        // under resource pressure, reject rather than pile a heavy merge onto an already stressed node. Force
+        // merge is a blocking operation, so we reject fast (instead of deferring, which would hang the caller)
+        // and let the caller retry or override with ignore_duress=true.
+        if (request.ignoreDuress() == false && autoForceMergeManager.shouldRejectForceMerge()) {
+            throw new OpenSearchRejectedExecutionException(
+                "force merge rejected for shard "
+                    + shardRouting.shardId()
+                    + " because the node is under duress (CPU, JVM heap, or disk usage over the configured force merge thresholds); "
+                    + "retry later or set ignore_duress=true to override"
+            );
+        }
         IndexShard indexShard = indicesService.indexServiceSafe(shardRouting.shardId().getIndex()).getShard(shardRouting.shardId().id());
         indexShard.forceMerge(request);
         return EmptyResult.INSTANCE;

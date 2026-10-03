@@ -123,6 +123,29 @@ public class AutoForceMergeManager extends AbstractLifecycleComponent {
         this.task.setInterval(schedulerInterval);
     }
 
+    /**
+     * Decides whether a user-triggered force merge should be rejected on this node right now.
+     * <p>
+     * Returns {@code true} only when the force merge duress check is enabled
+     * ({@code cluster.force_merge.duress_check.enabled}) and the node is currently in duress, i.e. CPU,
+     * JVM heap, or disk usage is over the configured auto force merge thresholds. This reuses the same
+     * node-health check that auto force merge applies, extending it to the {@code _forcemerge} API.
+     * Callers are expected to honor an explicit per-request override before consulting this.
+     *
+     * @return {@code true} if the force merge should be rejected due to node duress, {@code false} otherwise
+     */
+    public boolean shouldRejectForceMerge() {
+        // nodeValidator and forceMergeManagerSettings are initialized together in doStart(); guard against
+        // being called before the component has started (e.g. in tests) by not rejecting in that case.
+        if (forceMergeManagerSettings == null || nodeValidator == null) {
+            return false;
+        }
+        if (forceMergeManagerSettings.isForceMergeDuressCheckEnabled() == false) {
+            return false;
+        }
+        return nodeValidator.isNodeResourceUsageOverThreshold();
+    }
+
     private void triggerForceMerge() {
         long startTime = System.currentTimeMillis();
         try {
@@ -345,13 +368,7 @@ public class AutoForceMergeManager extends AbstractLifecycleComponent {
         @Override
         public ValidationResult validate() {
             resourceTrackers.start();
-            if (isCpuUsageOverThreshold()) {
-                return new ValidationResult(false);
-            }
-            if (isDiskUsageOverThreshold()) {
-                return new ValidationResult(false);
-            }
-            if (isJvmUsageOverThreshold()) {
+            if (isNodeResourceUsageOverThreshold()) {
                 return new ValidationResult(false);
             }
             if (areForceMergeThreadsAvailable() == false) {
@@ -359,6 +376,16 @@ public class AutoForceMergeManager extends AbstractLifecycleComponent {
                 return new ValidationResult(false);
             }
             return new ValidationResult(true);
+        }
+
+        /**
+         * Returns {@code true} if any monitored node resource (CPU, JVM heap, or disk) is currently over
+         * its configured threshold. This is the resource-pressure portion of {@link #validate()} without
+         * the force merge thread-pool availability check, so it can be reused to gate user-triggered force
+         * merges through the {@code _forcemerge} API.
+         */
+        boolean isNodeResourceUsageOverThreshold() {
+            return isCpuUsageOverThreshold() || isDiskUsageOverThreshold() || isJvmUsageOverThreshold();
         }
 
         private boolean areForceMergeThreadsAvailable() {

@@ -44,13 +44,14 @@ public class ForceMergeRequestTests extends OpenSearchTestCase {
     public void testDescription() {
         ForceMergeRequest request = new ForceMergeRequest();
         assertEquals(
-            "Force-merge indices [], maxSegments[-1], onlyExpungeDeletes[false], flush[true], primaryOnly[false]",
+            "Force-merge indices [], maxSegments[-1], onlyExpungeDeletes[false], flush[true], primaryOnly[false], ignoreDuress[false]",
             request.getDescription()
         );
 
         request = new ForceMergeRequest("shop", "blog");
         assertEquals(
-            "Force-merge indices [shop, blog], maxSegments[-1], onlyExpungeDeletes[false], flush[true], primaryOnly[false]",
+            "Force-merge indices [shop, blog], maxSegments[-1], onlyExpungeDeletes[false], flush[true], primaryOnly[false], "
+                + "ignoreDuress[false]",
             request.getDescription()
         );
 
@@ -59,22 +60,30 @@ public class ForceMergeRequestTests extends OpenSearchTestCase {
         request.onlyExpungeDeletes(true);
         request.flush(false);
         request.primaryOnly(true);
+        request.ignoreDuress(true);
         assertEquals(
-            "Force-merge indices [], maxSegments[12], onlyExpungeDeletes[true], flush[false], primaryOnly[true]",
+            "Force-merge indices [], maxSegments[12], onlyExpungeDeletes[true], flush[false], primaryOnly[true], ignoreDuress[true]",
             request.getDescription()
         );
     }
 
     public void testToString() {
         ForceMergeRequest request = new ForceMergeRequest();
-        assertEquals("ForceMergeRequest{maxNumSegments=-1, onlyExpungeDeletes=false, flush=true, primaryOnly=false}", request.toString());
+        assertEquals(
+            "ForceMergeRequest{maxNumSegments=-1, onlyExpungeDeletes=false, flush=true, primaryOnly=false, ignoreDuress=false}",
+            request.toString()
+        );
 
         request = new ForceMergeRequest();
         request.maxNumSegments(12);
         request.onlyExpungeDeletes(true);
         request.flush(false);
         request.primaryOnly(true);
-        assertEquals("ForceMergeRequest{maxNumSegments=12, onlyExpungeDeletes=true, flush=false, primaryOnly=true}", request.toString());
+        request.ignoreDuress(true);
+        assertEquals(
+            "ForceMergeRequest{maxNumSegments=12, onlyExpungeDeletes=true, flush=false, primaryOnly=true, ignoreDuress=true}",
+            request.toString()
+        );
     }
 
     public void testSerialization() throws Exception {
@@ -90,6 +99,7 @@ public class ForceMergeRequestTests extends OpenSearchTestCase {
             assertEquals(request.onlyExpungeDeletes(), deserializedRequest.onlyExpungeDeletes());
             assertEquals(request.flush(), deserializedRequest.flush());
             assertEquals(request.primaryOnly(), deserializedRequest.primaryOnly());
+            assertEquals(request.ignoreDuress(), deserializedRequest.ignoreDuress());
             assertEquals(request.forceMergeUUID(), deserializedRequest.forceMergeUUID());
         }
     }
@@ -117,10 +127,16 @@ public class ForceMergeRequestTests extends OpenSearchTestCase {
                     } else {
                         forceMergeUUID = in.readOptionalString();
                     }
+                    boolean ignoreDuress = false;
+                    if (version.onOrAfter(Version.V_3_10_0)) {
+                        ignoreDuress = in.readBoolean();
+                    }
                     assertEquals(sample.maxNumSegments(), maxNumSegments);
                     assertEquals(sample.onlyExpungeDeletes(), onlyExpungeDeletes);
                     assertEquals(sample.flush(), flush);
                     assertEquals(sample.primaryOnly(), primaryOnly);
+                    // ignoreDuress only travels on the wire from V_3_10_0; older versions drop it (defaults to false).
+                    assertEquals(version.onOrAfter(Version.V_3_10_0) ? sample.ignoreDuress() : false, ignoreDuress);
                     assertEquals(sample.forceMergeUUID(), forceMergeUUID);
                 }
             }
@@ -143,6 +159,9 @@ public class ForceMergeRequestTests extends OpenSearchTestCase {
                 } else {
                     out.writeOptionalString(sample.forceMergeUUID());
                 }
+                if (version.onOrAfter(Version.V_3_10_0)) {
+                    out.writeBoolean(sample.ignoreDuress());
+                }
 
                 final ForceMergeRequest deserializedRequest;
                 try (StreamInput in = out.bytes().streamInput()) {
@@ -154,6 +173,11 @@ public class ForceMergeRequestTests extends OpenSearchTestCase {
                 assertEquals(sample.onlyExpungeDeletes(), deserializedRequest.onlyExpungeDeletes());
                 assertEquals(sample.flush(), deserializedRequest.flush());
                 assertEquals(sample.primaryOnly(), deserializedRequest.primaryOnly());
+                // ignoreDuress only travels on the wire from V_3_10_0; older versions drop it (defaults to false).
+                assertEquals(
+                    version.onOrAfter(Version.V_3_10_0) ? sample.ignoreDuress() : false,
+                    deserializedRequest.ignoreDuress()
+                );
                 assertEquals(sample.forceMergeUUID(), deserializedRequest.forceMergeUUID());
             }
         }
@@ -167,6 +191,7 @@ public class ForceMergeRequestTests extends OpenSearchTestCase {
         request.onlyExpungeDeletes(true);
         request.flush(randomBoolean());
         request.primaryOnly(randomBoolean());
+        request.ignoreDuress(randomBoolean());
         return request;
     }
 }
