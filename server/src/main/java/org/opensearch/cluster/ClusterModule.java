@@ -68,9 +68,11 @@ import org.opensearch.cluster.routing.allocation.decider.AwarenessAllocationDeci
 import org.opensearch.cluster.routing.allocation.decider.ClusterRebalanceAllocationDecider;
 import org.opensearch.cluster.routing.allocation.decider.ConcurrentRebalanceAllocationDecider;
 import org.opensearch.cluster.routing.allocation.decider.ConcurrentRecoveriesAllocationDecider;
+import org.opensearch.cluster.routing.allocation.decider.CpuUsageAllocationDecider;
 import org.opensearch.cluster.routing.allocation.decider.DiskThresholdDecider;
 import org.opensearch.cluster.routing.allocation.decider.EnableAllocationDecider;
 import org.opensearch.cluster.routing.allocation.decider.FilterAllocationDecider;
+import org.opensearch.cluster.routing.allocation.decider.JvmMemoryUsageAllocationDecider;
 import org.opensearch.cluster.routing.allocation.decider.MaxRetryAllocationDecider;
 import org.opensearch.cluster.routing.allocation.decider.NodeLoadAwareAllocationDecider;
 import org.opensearch.cluster.routing.allocation.decider.NodeVersionAllocationDecider;
@@ -405,6 +407,8 @@ public class ClusterModule extends AbstractModule {
         addAllocationDecider(deciders, new SameShardAllocationDecider(settings, clusterSettings));
         addAllocationDecider(deciders, new DiskThresholdDecider(settings, clusterSettings));
         addAllocationDecider(deciders, new WarmDiskThresholdDecider(settings, clusterSettings));
+        addAllocationDecider(deciders, new CpuUsageAllocationDecider(settings, clusterSettings));
+        addAllocationDecider(deciders, new JvmMemoryUsageAllocationDecider(settings, clusterSettings));
         addAllocationDecider(deciders, new ThrottlingAllocationDecider(settings, clusterSettings));
         addAllocationDecider(deciders, new ShardsLimitAllocationDecider(settings, clusterSettings));
         addAllocationDecider(deciders, new AwarenessAllocationDecider(settings, clusterSettings));

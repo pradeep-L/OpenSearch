@@ -74,8 +74,10 @@ import org.opensearch.cluster.routing.allocation.decider.AwarenessAllocationDeci
 import org.opensearch.cluster.routing.allocation.decider.ClusterRebalanceAllocationDecider;
 import org.opensearch.cluster.routing.allocation.decider.ConcurrentRebalanceAllocationDecider;
 import org.opensearch.cluster.routing.allocation.decider.ConcurrentRecoveriesAllocationDecider;
+import org.opensearch.cluster.routing.allocation.decider.CpuUsageAllocationDecider;
 import org.opensearch.cluster.routing.allocation.decider.EnableAllocationDecider;
 import org.opensearch.cluster.routing.allocation.decider.FilterAllocationDecider;
+import org.opensearch.cluster.routing.allocation.decider.JvmMemoryUsageAllocationDecider;
 import org.opensearch.cluster.routing.allocation.decider.NodeLoadAwareAllocationDecider;
 import org.opensearch.cluster.routing.allocation.decider.SameShardAllocationDecider;
 import org.opensearch.cluster.routing.allocation.decider.ShardsLimitAllocationDecider;
@@ -379,6 +381,14 @@ public final class ClusterSettings extends AbstractScopedSettings {
                 DiskThresholdSettings.INDEX_READ_BLOCK_AUTO_RELEASE_EXCLUDE_PATTERNS,
                 DiskThresholdSettings.CLUSTER_ROUTING_ALLOCATION_INCLUDE_RELOCATIONS_SETTING,
                 DiskThresholdSettings.CLUSTER_ROUTING_ALLOCATION_REROUTE_INTERVAL_SETTING,
+                CpuUsageAllocationDecider.CLUSTER_ROUTING_ALLOCATION_RESOURCE_CPU_ENABLED_SETTING,
+                CpuUsageAllocationDecider.CLUSTER_ROUTING_ALLOCATION_RESOURCE_CPU_THROTTLE_THRESHOLD_SETTING,
+                CpuUsageAllocationDecider.CLUSTER_ROUTING_ALLOCATION_RESOURCE_CPU_DENY_THRESHOLD_SETTING,
+                CpuUsageAllocationDecider.CLUSTER_ROUTING_ALLOCATION_RESOURCE_CPU_STATS_MAX_AGE_SETTING,
+                JvmMemoryUsageAllocationDecider.CLUSTER_ROUTING_ALLOCATION_RESOURCE_JVM_ENABLED_SETTING,
+                JvmMemoryUsageAllocationDecider.CLUSTER_ROUTING_ALLOCATION_RESOURCE_JVM_THROTTLE_THRESHOLD_SETTING,
+                JvmMemoryUsageAllocationDecider.CLUSTER_ROUTING_ALLOCATION_RESOURCE_JVM_DENY_THRESHOLD_SETTING,
+                JvmMemoryUsageAllocationDecider.CLUSTER_ROUTING_ALLOCATION_RESOURCE_JVM_STATS_MAX_AGE_SETTING,
                 FileCacheThresholdSettings.CLUSTER_FILECACHE_ACTIVEUSAGE_THRESHOLD_ENABLED_SETTING,
                 FileCacheThresholdSettings.CLUSTER_FILECACHE_ACTIVEUSAGE_INDEXING_THRESHOLD_SETTING,
                 FileCacheThresholdSettings.CLUSTER_FILECACHE_ACTIVEUSAGE_SEARCH_THRESHOLD_SETTING,

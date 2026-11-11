@@ -48,6 +48,8 @@ import org.opensearch.cluster.block.ClusterBlockException;
 import org.opensearch.cluster.node.DiscoveryNode;
 import org.opensearch.cluster.routing.ShardRouting;
 import org.opensearch.cluster.routing.allocation.DiskThresholdSettings;
+import org.opensearch.cluster.routing.allocation.decider.CpuUsageAllocationDecider;
+import org.opensearch.cluster.routing.allocation.decider.JvmMemoryUsageAllocationDecider;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.settings.ClusterSettings;
 import org.opensearch.common.settings.Setting;
@@ -119,7 +121,11 @@ public class InternalClusterInfoService implements ClusterInfoService, ClusterSt
     private volatile IndicesStatsSummary indicesStatsSummary;
     // null if this node is not currently the cluster-manager
     private final AtomicReference<RefreshAndRescheduleRunnable> refreshAndRescheduleRunnable = new AtomicReference<>();
+    // mirrors the disk threshold decider's enabled setting
     private volatile boolean enabled;
+    // mirror the resource usage deciders' enabled settings; they also need fresh cluster info
+    private volatile boolean cpuUsageDeciderEnabled;
+    private volatile boolean jvmUsageDeciderEnabled;
     private volatile TimeValue fetchTimeout;
     private final ThreadPool threadPool;
     private final Client client;
@@ -136,7 +142,17 @@ public class InternalClusterInfoService implements ClusterInfoService, ClusterSt
         this.updateFrequency = INTERNAL_CLUSTER_INFO_UPDATE_INTERVAL_SETTING.get(settings);
         this.fetchTimeout = INTERNAL_CLUSTER_INFO_TIMEOUT_SETTING.get(settings);
         this.enabled = DiskThresholdSettings.CLUSTER_ROUTING_ALLOCATION_DISK_THRESHOLD_ENABLED_SETTING.get(settings);
+        this.cpuUsageDeciderEnabled = CpuUsageAllocationDecider.CLUSTER_ROUTING_ALLOCATION_RESOURCE_CPU_ENABLED_SETTING.get(settings);
+        this.jvmUsageDeciderEnabled = JvmMemoryUsageAllocationDecider.CLUSTER_ROUTING_ALLOCATION_RESOURCE_JVM_ENABLED_SETTING.get(settings);
         ClusterSettings clusterSettings = clusterService.getClusterSettings();
+        clusterSettings.addSettingsUpdateConsumer(
+            CpuUsageAllocationDecider.CLUSTER_ROUTING_ALLOCATION_RESOURCE_CPU_ENABLED_SETTING,
+            this::setCpuUsageDeciderEnabled
+        );
+        clusterSettings.addSettingsUpdateConsumer(
+            JvmMemoryUsageAllocationDecider.CLUSTER_ROUTING_ALLOCATION_RESOURCE_JVM_ENABLED_SETTING,
+            this::setJvmUsageDeciderEnabled
+        );
         clusterSettings.addSettingsUpdateConsumer(INTERNAL_CLUSTER_INFO_TIMEOUT_SETTING, this::setFetchTimeout);
         clusterSettings.addSettingsUpdateConsumer(INTERNAL_CLUSTER_INFO_UPDATE_INTERVAL_SETTING, this::setUpdateFrequency);
         clusterSettings.addSettingsUpdateConsumer(
@@ -147,6 +163,22 @@ public class InternalClusterInfoService implements ClusterInfoService, ClusterSt
 
     private void setEnabled(boolean enabled) {
         this.enabled = enabled;
+    }
+
+    private void setCpuUsageDeciderEnabled(boolean cpuUsageDeciderEnabled) {
+        this.cpuUsageDeciderEnabled = cpuUsageDeciderEnabled;
+    }
+
+    private void setJvmUsageDeciderEnabled(boolean jvmUsageDeciderEnabled) {
+        this.jvmUsageDeciderEnabled = jvmUsageDeciderEnabled;
+    }
+
+    /**
+     * Cluster info is refreshed while any decider that reads it is enabled: the disk threshold decider or one of the
+     * resource usage deciders.
+     */
+    boolean isRefreshEnabled() {
+        return enabled || cpuUsageDeciderEnabled || jvmUsageDeciderEnabled;
     }
 
     private void setFetchTimeout(TimeValue fetchTimeout) {
@@ -171,7 +203,7 @@ public class InternalClusterInfoService implements ClusterInfoService, ClusterSt
             return;
         }
 
-        if (enabled == false) {
+        if (isRefreshEnabled() == false) {
             return;
         }
 
@@ -554,7 +586,7 @@ public class InternalClusterInfoService implements ClusterInfoService, ClusterSt
 
         @Override
         protected void doRun() {
-            if (enabled) {
+            if (isRefreshEnabled()) {
                 logger.trace("refreshing cluster info [{}]", reason);
                 refresh();
             } else {

@@ -48,9 +48,11 @@ import org.opensearch.cluster.routing.allocation.decider.AwarenessAllocationDeci
 import org.opensearch.cluster.routing.allocation.decider.ClusterRebalanceAllocationDecider;
 import org.opensearch.cluster.routing.allocation.decider.ConcurrentRebalanceAllocationDecider;
 import org.opensearch.cluster.routing.allocation.decider.ConcurrentRecoveriesAllocationDecider;
+import org.opensearch.cluster.routing.allocation.decider.CpuUsageAllocationDecider;
 import org.opensearch.cluster.routing.allocation.decider.DiskThresholdDecider;
 import org.opensearch.cluster.routing.allocation.decider.EnableAllocationDecider;
 import org.opensearch.cluster.routing.allocation.decider.FilterAllocationDecider;
+import org.opensearch.cluster.routing.allocation.decider.JvmMemoryUsageAllocationDecider;
 import org.opensearch.cluster.routing.allocation.decider.MaxRetryAllocationDecider;
 import org.opensearch.cluster.routing.allocation.decider.NodeLoadAwareAllocationDecider;
 import org.opensearch.cluster.routing.allocation.decider.NodeVersionAllocationDecider;
@@ -324,6 +326,8 @@ public class ClusterModuleTests extends ModuleTestCase {
             SameShardAllocationDecider.class,
             DiskThresholdDecider.class,
             WarmDiskThresholdDecider.class,
+            CpuUsageAllocationDecider.class,
+            JvmMemoryUsageAllocationDecider.class,
             ThrottlingAllocationDecider.class,
             ShardsLimitAllocationDecider.class,
             AwarenessAllocationDecider.class,
